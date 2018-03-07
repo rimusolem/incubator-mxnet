@@ -34,8 +34,7 @@ struct ShuffleGPUImpl {
   using KeyType = double;  // `float` does not provide enough precision
 
   struct AddBatchIndexKernel {
-    template<typename DType>
-    MSHADOW_XINLINE static void Map(int i, DType* keys, size_t n_elements) {
+    MSHADOW_XINLINE static void Map(int i, KeyType* keys, size_t n_elements) {
       keys[i] += i / n_elements;
     }
   };
