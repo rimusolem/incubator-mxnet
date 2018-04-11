@@ -42,19 +42,6 @@ def test_bucket_module():
                                                     data_name=data_name, label_name=label_name,
                                                     dtype=dtype, layout=layout)
 
-        def reset(self):
-            """Resets the iterator to the beginning of the data."""
-            self.curr_idx = 0
-            random.shuffle(self.idx)
-            for buck in self.data:
-                np.random.shuffle(buck)
-
-            self.nddata = []
-            self.ndlabel = []
-            for buck in self.data:
-                self.nddata.append(mx.nd.array(buck, dtype=self.dtype))
-                self.ndlabel.append(mx.nd.array(buck, dtype=self.dtype))
-
     batch_size = 128
     num_epochs = 5
     num_hidden = 25
