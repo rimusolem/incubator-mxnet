@@ -26,6 +26,7 @@ import numpy as np
 
 from ..io import DataIter, DataBatch, DataDesc
 from .. import ndarray
+from ..ndarray.random import shuffle
 
 def encode_sentences(sentences, vocab=None, invalid_label=-1, invalid_key='\n', start_label=0):
     """Encode sentences and (optionally) build a mapping
@@ -110,7 +111,7 @@ class BucketSentenceIter(DataIter):
         buckets.sort()
 
         ndiscard = 0
-        self.data = [[] for _ in buckets]
+        tmp_data = [[] for _ in buckets]
         for i, sent in enumerate(sentences):
             buck = bisect.bisect_left(buckets, len(sent))
             if buck == len(buckets):
@@ -118,9 +119,9 @@ class BucketSentenceIter(DataIter):
                 continue
             buff = np.full((buckets[buck],), invalid_label, dtype=dtype)
             buff[:len(sent)] = sent
-            self.data[buck].append(buff)
+            tmp_data[buck].append(buff)
 
-        self.data = [np.asarray(i, dtype=dtype) for i in self.data]
+        self.nddata = [ndarray.array(i, dtype=dtype) for i in tmp_data]
 
         print("WARNING: discarded %d sentences longer than the largest bucket."%ndiscard)
 
@@ -130,7 +131,6 @@ class BucketSentenceIter(DataIter):
         self.label_name = label_name
         self.dtype = dtype
         self.invalid_label = invalid_label
-        self.nddata = []
         self.ndlabel = []
         self.major_axis = layout.find('N')
         self.layout = layout
@@ -154,7 +154,7 @@ class BucketSentenceIter(DataIter):
             raise ValueError("Invalid layout %s: Must by NT (batch major) or TN (time major)")
 
         self.idx = []
-        for i, buck in enumerate(self.data):
+        for i, buck in enumerate(self.nddata):
             self.idx.extend([(i, j) for j in range(0, len(buck) - batch_size + 1, batch_size)])
         self.curr_idx = 0
 
@@ -163,18 +163,17 @@ class BucketSentenceIter(DataIter):
     def reset(self):
         """Resets the iterator to the beginning of the data."""
         self.curr_idx = 0
-        random.shuffle(self.idx)
-        for buck in self.data:
-            np.random.shuffle(buck)
+        tmp = ndarray.arange(len(self.idx), dtype='int32')
+        self.idx = [self.idx[i] for i in shuffle(tmp, out=tmp).asnumpy()]
+        for buck in self.nddata:
+            shuffle(buck, out=buck)
 
-        self.nddata = []
         self.ndlabel = []
-        for buck in self.data:
-            label = np.empty_like(buck)
+        for buck in self.nddata:
+            label = ndarray.zeros_like(buck)
             label[:, :-1] = buck[:, 1:]
             label[:, -1] = self.invalid_label
-            self.nddata.append(ndarray.array(buck, dtype=self.dtype))
-            self.ndlabel.append(ndarray.array(label, dtype=self.dtype))
+            self.ndlabel.append(label)
 
     def next(self):
         """Returns the next batch of data."""
