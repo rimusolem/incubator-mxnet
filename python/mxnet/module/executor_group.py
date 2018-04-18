@@ -327,7 +327,7 @@ class DataParallelExecutorGroup(object):
         self.aux_arrays = [[exec_.aux_arrays[i] for exec_ in self.execs]
                            for i in range(len(self.aux_names))]
 
-    def bind_exec(self, data_shapes, label_shapes, shared_group=None, reshape=False):
+    def bind_exec(self, data_shapes, label_shapes, shared_group=None, reshape=False, partial_shaping=False):
         """Bind executors on their respective devices.
 
         Parameters
@@ -336,6 +336,7 @@ class DataParallelExecutorGroup(object):
         label_shapes : list
         shared_group : DataParallelExecutorGroup
         reshape : bool
+        partial_shaping: bool
         """
         assert reshape or not self.execs
         self.batch_size = None
@@ -355,7 +356,7 @@ class DataParallelExecutorGroup(object):
 
             if reshape:
                 self.execs[i] = self._default_execs[i].reshape(
-                    allow_up_sizing=True, **dict(data_shapes_i + label_shapes_i))
+                    allow_up_sizing=True, **dict(data_shapes_i + label_shapes_i), partial_shaping=partial_shaping)
             else:
                 self.execs.append(self._bind_ith_exec(i, data_shapes_i, label_shapes_i,
                                                       shared_group))
@@ -367,19 +368,20 @@ class DataParallelExecutorGroup(object):
             self.label_names = [i.name for i in self.label_shapes]
         self._collect_arrays()
 
-    def reshape(self, data_shapes, label_shapes):
+    def reshape(self, data_shapes, label_shapes, partial_shaping=False):
         """Reshape executors.
 
         Parameters
         ----------
         data_shapes : list
         label_shapes : list
+        partial_shaping : bool
         """
         if data_shapes == self.data_shapes and label_shapes == self.label_shapes:
             return
         if self._default_execs is None:
             self._default_execs = [i for i in self.execs]
-        self.bind_exec(data_shapes, label_shapes, reshape=True)
+        self.bind_exec(data_shapes, label_shapes, reshape=True, partial_shaping=partial_shaping)
 
     def set_params(self, arg_params, aux_params, allow_extra=False):
         """Assign, i.e. copy parameters to all the executors.
