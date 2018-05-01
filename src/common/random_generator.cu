@@ -42,7 +42,7 @@ __global__ void rand_generator_seed_kernel(mshadow::PCGRandom32 *states_,
                                            uint32_t seed,
                                            uint32_t sequence_id_offset) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
-  if (id < size) cu_seed(seed, sequence_id_offset + id, 0, states_ + id);
+  if (id < size) (states_ + id)->seed(seed, sequence_id_offset + id);
 }
 
 template<>
