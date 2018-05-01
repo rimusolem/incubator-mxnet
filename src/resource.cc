@@ -95,11 +95,11 @@ class ResourceManagerImpl : public ResourceManager {
     engine_ref_ = Engine::_GetSharedRef();
     storage_ref_ = Storage::_GetSharedRef();
     cpu_rand_.reset(new ResourceRandom<cpu>(
-        Context::CPU(), global_seed_));
+        *this, Context::CPU(), global_seed_));
     cpu_space_.reset(new ResourceTempSpace(
         Context::CPU(), cpu_temp_space_copy_));
     cpu_parallel_rand_.reset(new ResourceParallelRandom<cpu>(
-        Context::CPU(), cpu_native_rand_copy_, global_seed_));
+        *this, Context::CPU(), cpu_native_rand_copy_, global_seed_));
   }
   ~ResourceManagerImpl() {
     // need explicit delete, before engine get killed
@@ -134,7 +134,7 @@ class ResourceManagerImpl : public ResourceManager {
       switch (req.type) {
         case ResourceRequest::kRandom: {
           return gpu_rand_.Get(ctx.dev_id, [ctx, this]() {
-              return new ResourceRandom<gpu>(ctx, global_seed_);
+              return new ResourceRandom<gpu>(*this, ctx, global_seed_);
             })->resource;
         }
         case ResourceRequest::kTempSpace: {
@@ -144,7 +144,7 @@ class ResourceManagerImpl : public ResourceManager {
         }
         case ResourceRequest::kParallelRandom: {
           return gpu_parallel_rand_.Get(ctx.dev_id, [ctx, this]() {
-            return new ResourceParallelRandom<gpu>(ctx, gpu_native_rand_copy_, global_seed_);
+            return new ResourceParallelRandom<gpu>(*this, ctx, gpu_native_rand_copy_, global_seed_);
           })->GetNext();
         }
         default: LOG(FATAL) << "Unknown supported type " << req.type;
@@ -159,36 +159,43 @@ class ResourceManagerImpl : public ResourceManager {
 
   void SeedRandom(uint32_t seed) override {
     global_seed_ = seed;
-    cpu_rand_->SeedWithDeviceID(global_seed_);
-    cpu_parallel_rand_->SeedWithDeviceID(global_seed_);
+    cpu_rand_->SeedWithDeviceID(*this, global_seed_);
+    cpu_parallel_rand_->SeedWithDeviceID(*this, global_seed_);
 #if MXNET_USE_CUDA
-    gpu_rand_.ForEach([seed](size_t i, ResourceRandom<gpu> *p) {
-        p->SeedWithDeviceID(seed);
+    gpu_rand_.ForEach([this, seed](size_t i, ResourceRandom<gpu> *p) {
+        p->SeedWithDeviceID(*this, seed);
       });
-    gpu_parallel_rand_.ForEach([seed](size_t i, ResourceParallelRandom<gpu> *p) {
-      p->SeedWithDeviceID(seed);
+    gpu_parallel_rand_.ForEach([this, seed](size_t i, ResourceParallelRandom<gpu> *p) {
+      p->SeedWithDeviceID(*this, seed);
     });
 #endif
   }
 
   void SeedRandom(Context ctx, uint32_t seed) override {
-    cpu_rand_->Seed(seed);
-    cpu_parallel_rand_->Seed(seed);
+    cpu_rand_->Seed(*this, seed);
+    cpu_parallel_rand_->Seed(*this, seed);
 #if MXNET_USE_CUDA
     gpu_rand_.Get(ctx.dev_id, [ctx, seed, this]() {
-      return new ResourceRandom<gpu>(ctx, seed);
-    })->Seed(seed);
+      return new ResourceRandom<gpu>(*this, ctx, seed);
+    })->Seed(*this, seed);
     gpu_parallel_rand_.Get(ctx.dev_id, [ctx, seed, this]() {
-      return new ResourceParallelRandom<gpu>(ctx, gpu_native_rand_copy_, seed);
-    })->Seed(seed);
+      return new ResourceParallelRandom<gpu>(*this, ctx, gpu_native_rand_copy_, seed);
+    })->Seed(*this, seed);
 #endif
   }
 
  private:
+  template<typename Device>
+  unsigned GetRandomSequenceID(unsigned dev_id, unsigned sampler_id, bool is_parallel_generator) const;
+
+  /*! \brief Reserved nunmber of random sequences for non-parallel cpu random generators */
+  static constexpr unsigned kReservedNumCPUNonParallelRNGs = 1024;
+  /*! \brief Reserved nunmber of random sequences for non-parallel gpu random generators */
+  static constexpr unsigned kReservedNumGPUNonParallelRNGs = 1024;
+  /*! \brief Maximum number of CPUs */
+  static constexpr unsigned kMaxNumCPUs = 16;
   /*! \brief Maximum number of GPUs */
-  static constexpr std::size_t kMaxNumGPUs = 16;
-  /*! \brief Random number magic number to seed different random numbers */
-  static constexpr uint32_t kRandMagic = 127UL;
+  static constexpr unsigned kMaxNumGPUs = 16;
   // the random number resources
   template<typename xpu>
   struct ResourceRandom {
@@ -199,11 +206,12 @@ class ResourceManagerImpl : public ResourceManager {
     /*! \brief resource representation */
     Resource resource;
     /*! \brief constructor */
-    explicit ResourceRandom(Context ctx, uint32_t global_seed)
+    explicit ResourceRandom(const ResourceManagerImpl& mgr, Context ctx, uint32_t global_seed)
         : ctx(ctx) {
       mshadow::SetDevice<xpu>(ctx.dev_id);
       resource.var = Engine::Get()->NewVariable();
-      prnd = new mshadow::Random<xpu>(ctx.dev_id + global_seed * kRandMagic);
+      prnd = new mshadow::Random<xpu>(
+        global_seed, mgr.GetRandomSequenceID<xpu>(ctx.dev_id, 0, false));
       resource.ptr_ = prnd;
       resource.req = ResourceRequest(ResourceRequest::kRandom);
     }
@@ -215,16 +223,23 @@ class ResourceManagerImpl : public ResourceManager {
           }, ctx, resource.var);
     }
     // set seed to a PRNG using global_seed and device id
-    inline void SeedWithDeviceID(uint32_t global_seed) {
-      Seed(ctx.dev_id + global_seed * kRandMagic);
-    }
-    // set seed to a PRNG
-    inline void Seed(uint32_t seed) {
+    inline void SeedWithDeviceID(const ResourceManagerImpl& mgr, uint32_t seed) {
       mshadow::Random<xpu> *r = prnd;
       Engine::Get()->PushAsync(
-        [r, seed](RunContext rctx, Engine::CallbackOnComplete on_complete) {
+        [r, &mgr, seed](RunContext rctx, Engine::CallbackOnComplete on_complete) {
           r->set_stream(rctx.get_stream<xpu>());
-          r->Seed(seed);
+          r->Seed(seed, mgr.GetRandomSequenceID<xpu>(rctx.ctx.dev_id, 0, false));
+          on_complete();
+        }, ctx, {}, {resource.var},
+        FnProperty::kNormal, 0, "ResourceRandomSetSeed");
+    }
+    // set seed to a PRNG
+    inline void Seed(const ResourceManagerImpl& mgr, uint32_t seed) {
+      mshadow::Random<xpu> *r = prnd;
+      Engine::Get()->PushAsync(
+        [r, &mgr, seed](RunContext rctx, Engine::CallbackOnComplete on_complete) {
+          r->set_stream(rctx.get_stream<xpu>());
+          r->Seed(seed, mgr.GetRandomSequenceID<xpu>(0, 0, false));
           on_complete();
         }, ctx, {}, {resource.var},
         FnProperty::kNormal, 0, "ResourceRandomSetSeed");
@@ -289,16 +304,17 @@ class ResourceManagerImpl : public ResourceManager {
     /*! \brief current pointer to the round roubin allocator */
     std::atomic<size_t> curr_ptr;
     /*! \brief constructor */
-    explicit ResourceParallelRandom(Context ctx, size_t ncopy, uint32_t global_seed)
+    explicit ResourceParallelRandom(const ResourceManagerImpl& mgr, Context ctx, size_t ncopy,
+                                    uint32_t global_seed)
         : ctx(ctx), sampler(ncopy), resource(ncopy), curr_ptr(0) {
       for (size_t i = 0; i < sampler.size(); ++i) {
-        const uint32_t seed = ctx.dev_id + i * kMaxNumGPUs + global_seed * kRandMagic;
         resource[i].var = Engine::Get()->NewVariable();
         common::random::RandGenerator<xpu> *r = new common::random::RandGenerator<xpu>();
         Engine::Get()->PushSync(
-        [r, seed](RunContext rctx) {
+        [r, i, &mgr, global_seed](RunContext rctx) {
           common::random::RandGenerator<xpu>::AllocState(r);
-          r->Seed(rctx.get_stream<xpu>(), seed);
+          r->Seed(rctx.get_stream<xpu>(), global_seed,
+                  mgr.GetRandomSequenceID<xpu>(rctx.ctx.dev_id, i, true));
         }, ctx, {}, {resource[i].var},
         FnProperty::kNormal, 0, "ResourceParallelRandomSetSeed");
         sampler[i] = r;
@@ -316,31 +332,34 @@ class ResourceManagerImpl : public ResourceManager {
         }, ctx, resource[i].var);
       }
     }
-    // set seed to a sampler using global_seed and device id
-    inline void SeedWithDeviceID(uint32_t global_seed) {
+    // set seed to each sampler using global_seed and device id
+    inline void SeedWithDeviceID(const ResourceManagerImpl& mgr, uint32_t global_seed) {
       for (size_t i = 0; i < sampler.size(); ++i) {
-        SeedOne(i, ctx.dev_id + i * kMaxNumGPUs + global_seed * kRandMagic);
+        common::random::RandGenerator<xpu> *r = sampler[i];
+        Engine::Get()->PushAsync(
+        [r, i, &mgr, global_seed](RunContext rctx, Engine::CallbackOnComplete on_complete) {
+          r->Seed(rctx.get_stream<xpu>(), global_seed,
+            mgr.GetRandomSequenceID<xpu>(rctx.ctx.dev_id, i, true));
+          on_complete();
+        }, ctx, {}, {resource[i].var},
+        FnProperty::kNormal, 0, "ResourceNativeRandomSetSeedWithDeviceID");
       }
       // reset pointer to ensure the same result with the same seed.
       curr_ptr.store(0);
     }
-    // set seed to a sampler
-    inline void Seed(uint32_t seed) {
+    // set seed to each sampler
+    inline void Seed(const ResourceManagerImpl& mgr, uint32_t seed) {
       for (size_t i = 0; i < sampler.size(); ++i) {
-        SeedOne(i, i * kMaxNumGPUs + seed * kRandMagic);
+        common::random::RandGenerator<xpu> *r = sampler[i];
+        Engine::Get()->PushAsync(
+        [r, i, &mgr, seed](RunContext rctx, Engine::CallbackOnComplete on_complete) {
+          r->Seed(rctx.get_stream<xpu>(), seed, mgr.GetRandomSequenceID<xpu>(0, i, true));
+          on_complete();
+        }, ctx, {}, {resource[i].var},
+        FnProperty::kNormal, 0, "ResourceNativeRandomSetSeed");
       }
       // reset pointer to ensure the same result with the same seed.
       curr_ptr.store(0);
-    }
-    // set seed to a sampler
-    inline void SeedOne(size_t i, uint32_t seed) {
-      common::random::RandGenerator<xpu> *r = sampler[i];
-      Engine::Get()->PushAsync(
-      [r, seed](RunContext rctx, Engine::CallbackOnComplete on_complete) {
-        r->Seed(rctx.get_stream<xpu>(), seed);
-        on_complete();
-      }, ctx, {}, {resource[i].var},
-      FnProperty::kNormal, 0, "ResourceNativeRandomSetSeed");
     }
     // get next resource in round roubin matter
     inline Resource GetNext() {
@@ -384,6 +403,45 @@ class ResourceManagerImpl : public ResourceManager {
   common::LazyAllocArray<ResourceParallelRandom<gpu> > gpu_parallel_rand_;
 #endif
 };
+
+template<>
+unsigned ResourceManagerImpl::GetRandomSequenceID<cpu>(
+  unsigned dev_id,
+  unsigned sampler_id,
+  bool is_parallel_generator
+) const {
+  using PRNG = mxnet::common::random::RandGenerator<cpu, mshadow::default_real_t>;
+  if (is_parallel_generator) {
+    // Number of independent random sequences used for samplers ahead of this one.
+    return kReservedNumCPUNonParallelRNGs +
+      (dev_id * cpu_native_rand_copy_ + sampler_id) *
+      PRNG::kNumRandomStates;
+  } else {
+    // dev_id is always 0 for all cpu and one sampler is shared by them.
+    return dev_id;
+  }
+}
+
+template<>
+unsigned ResourceManagerImpl::GetRandomSequenceID<gpu>(
+  unsigned dev_id,
+  unsigned sampler_id,
+  bool is_parallel_generator
+) const {
+  using PRNG = mxnet::common::random::RandGenerator<gpu, mshadow::default_real_t>;
+  const unsigned reservedForCPU = kReservedNumCPUNonParallelRNGs +
+    kMaxNumCPUs * cpu_native_rand_copy_ * PRNG::kNumRandomStates;
+  if (is_parallel_generator) {
+    // Number of independent random sequences used for samplers ahead of this one.
+    return reservedForCPU + kReservedNumGPUNonParallelRNGs +
+      (dev_id * gpu_native_rand_copy_ + sampler_id) *
+      PRNG::kNumRandomStates;
+  } else {
+    // One nonparallel sampler is used for each device.
+    return dev_id;
+  }
+}
+
 }  // namespace resource
 
 void* Resource::get_space_internal(size_t size) const {
