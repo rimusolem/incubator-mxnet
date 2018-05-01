@@ -108,6 +108,74 @@ const int RandGenerator<cpu, DType>::kNumRandomStates = 1024;
 
 #if MXNET_USE_CUDA
 
+__device__ void cu_seed(unsigned seed, unsigned sequence_id, unsigned, mshadow::PCGRandom32* state);
+
+__device__ unsigned cu_rand(mshadow::PCGRandom32* state);
+
+__device__ float cu_uniform(mshadow::PCGRandom32* state);
+
+__device__ float cu_normal(mshadow::PCGRandom32* state);
+
+__device__ double cu_uniform_double(mshadow::PCGRandom32* state);
+
+__device__ double cu_normal_double(mshadow::PCGRandom32* state);
+
+#ifdef __CUDACC__
+
+MSHADOW_FORCE_INLINE __device__ void cu_seed(unsigned seed, unsigned sequence_id,
+  unsigned offset, mshadow::PCGRandom32* state) {
+  state->seed(seed, sequence_id);
+}
+
+MSHADOW_FORCE_INLINE __device__ unsigned cu_rand(mshadow::PCGRandom32* state) {
+  return static_cast<unsigned>((*state)());
+}
+
+MSHADOW_FORCE_INLINE __device__ float cu_uniform(mshadow::PCGRandom32* state) {
+  return mshadow::RandomBitsToFPNumber<uint32_t>::Convert((*state)());
+}
+
+MSHADOW_FORCE_INLINE __device__ float cu_normal(mshadow::PCGRandom32* state) {
+  // Box-Muller method
+  using UIType = typename mshadow::PCGRandom32::result_type;
+  using FPType = float;
+  using CM = mshadow::cuda::CuMath<FPType>;
+  const FPType two_pi = 6.283185307179586;
+  FPType u1 = cu_uniform(state);
+  while (u1 == 0) {
+    u1 = cu_uniform(state);
+  }
+  const FPType u2 = cu_uniform(state);
+  const FPType v1 = CM::sqrt(-FPType(2) * CM::log(u1));
+  const FPType v2 = two_pi * u2;
+  return v1 * CM::cos(v2);
+}
+
+MSHADOW_FORCE_INLINE __device__ double cu_uniform_double(mshadow::PCGRandom32* state) {
+  mshadow::PCGRandom32::result_type u1 = (*state)();
+  mshadow::PCGRandom32::result_type u2 = (*state)();
+  uint64_t u3 = static_cast<uint64_t>(u1) << 32 | u2;
+  return mshadow::RandomBitsToFPNumber<uint64_t>::Convert(u3);
+}
+
+MSHADOW_FORCE_INLINE __device__ double cu_normal_double(mshadow::PCGRandom32* state) {
+  // Box-Muller method
+  using UIType = uint64_t;
+  using FPType = double;
+  using CM = mshadow::cuda::CuMath<FPType>;
+  const FPType two_pi = 6.283185307179586;
+  FPType u1 = cu_uniform_double(state);
+  while (u1 == 0) {
+    u1 = cu_uniform_double(state);
+  }
+  const FPType u2 = cu_uniform_double(state);
+  const FPType v1 = CM::sqrt(-FPType(2) * CM::log(u1));
+  const FPType v2 = two_pi * u2;
+  return v1 * CM::cos(v2);
+}
+
+#endif  // __CUDACC__
+
 template<typename DType>
 class RandGenerator<gpu, DType> {
  public:
@@ -116,10 +184,6 @@ class RandGenerator<gpu, DType> {
   // store how many global random states for GPU.
   static const int kNumRandomStates;
 
-  // uniform number generation in Cuda made consistent with stl (include 0 but exclude 1)
-  // by using 1.0-curand_uniform().
-  // Needed as some samplers in sampler.h won't be able to deal with
-  // one of the boundary cases.
   class Impl {
    public:
     Impl &operator=(const Impl &) = delete;
@@ -137,26 +201,26 @@ class RandGenerator<gpu, DType> {
     }
 
     MSHADOW_FORCE_INLINE __device__ int rand() {
-      return curand(&state_);
+      return cu_rand(&state_);
     }
 
     MSHADOW_FORCE_INLINE __device__ float uniform() {
-      return static_cast<float>(1.0) - curand_uniform(&state_);
+      return cu_uniform(&state_);
     }
 
     MSHADOW_FORCE_INLINE __device__ float normal() {
-      return curand_normal(&state_);
+      return cu_normal(&state_);
     }
 
    private:
     RandGenerator<gpu, DType> *global_gen_;
     int global_state_idx_;
-    curandStatePhilox4_32_10_t state_;
+    mshadow::PCGRandom32 state_;
   };  // class RandGenerator<gpu, DType>::Impl
 
   static void AllocState(RandGenerator<gpu, DType> *inst) {
     CUDA_CALL(cudaMalloc(&inst->states_,
-                         kNumRandomStates * sizeof(curandStatePhilox4_32_10_t)));
+                         kNumRandomStates * sizeof(mshadow::PCGRandom32)));
   }
 
   static void FreeState(RandGenerator<gpu, DType> *inst) {
@@ -166,7 +230,7 @@ class RandGenerator<gpu, DType> {
   void Seed(mshadow::Stream<gpu> *s, uint32_t seed, uint32_t sequence_id_offset);
 
  private:
-  curandStatePhilox4_32_10_t *states_;
+  mshadow::PCGRandom32 *states_;
 };  // class RandGenerator<gpu, DType>
 
 template<>
@@ -193,25 +257,25 @@ class RandGenerator<gpu, double> {
     }
 
     MSHADOW_FORCE_INLINE __device__ int rand() {
-      return curand(&state_);
+      return cu_rand(&state_);
     }
 
     MSHADOW_FORCE_INLINE __device__ double uniform() {
-      return static_cast<float>(1.0) - curand_uniform_double(&state_);
+      return cu_uniform_double(&state_);
     }
 
     MSHADOW_FORCE_INLINE __device__ double normal() {
-      return curand_normal_double(&state_);
+      return cu_normal_double(&state_);
     }
 
    private:
     RandGenerator<gpu, double> *global_gen_;
     int global_state_idx_;
-    curandStatePhilox4_32_10_t state_;
-  };  // class RandGenerator<gpu, double>::Impl
+    mshadow::PCGRandom32 state_;
+  };  // class RandGenerator<gpu, double>::ImplcurandStatePhilox4_32_10_t
 
  private:
-  curandStatePhilox4_32_10_t *states_;
+  mshadow::PCGRandom32 *states_;
 };  // class RandGenerator<gpu, double>
 
 #endif  // MXNET_USE_CUDA
