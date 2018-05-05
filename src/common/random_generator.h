@@ -79,9 +79,9 @@ class RandGenerator<cpu, DType> {
     typename std::conditional<
       std::is_integral<DType>::value,
       std::uniform_int_distribution<DType>,
-      mshadow::uniform_real_distribution<cpu, RandomState, FType>
+      mshadow::UniformRealDistribution<cpu, RandomState, FType>
     >::type dist_uniform;
-    mshadow::normal_distribution<cpu, RandomState, FType> dist_normal;
+    mshadow::GaussianDistribution<cpu, RandomState, FType> dist_normal;
   };
 
   static void AllocState(RandGenerator<cpu, DType> *inst) {
@@ -157,9 +157,9 @@ class RandGenerator<gpu, DType> {
     typename std::conditional<
       std::is_integral<DType>::value,
       std::uniform_int_distribution<DType>,
-      mshadow::uniform_real_distribution<gpu, RandomState, FType>
+      mshadow::UniformRealDistribution<gpu, RandomState, FType>
     >::type dist_uniform;
-    mshadow::normal_distribution<gpu, RandomState, FType> dist_normal;
+    mshadow::GaussianDistribution<gpu, RandomState, FType> dist_normal;
   };  // class RandGenerator<gpu, DType>::Impl
 
   static void AllocState(RandGenerator<gpu, DType> *inst) {
