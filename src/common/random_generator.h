@@ -113,7 +113,7 @@ const int RandGenerator<cpu, DType>::kNumRandomStates = 1024;
 template<typename DType>
 class RandGenerator<gpu, DType> {
  public:
-  // generates float and convert to half_t if DType is halt_t.
+  // Generate float and convert to half_t if DType is half_t.
   using FType = typename std::conditional<sizeof(DType) <= 4, float, double>::type;
   // For float and half_t, 32-bit PCG generator is faster than 64-bit PCG generator.
   // To generate 64 random bits, two 32-bit random numbers are combined.
