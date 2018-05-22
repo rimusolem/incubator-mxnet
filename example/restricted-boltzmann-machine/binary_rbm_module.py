@@ -88,7 +88,7 @@ for epoch in range(num_epoch):
     print("Epoch %d complete" % (epoch,))
 
 
-## Show some samples. Each sample is obtained by 1000 steps of Gibbs sampling starting from a real data.
+### Show some samples. Each sample is obtained by 1000 steps of Gibbs sampling starting from a real data.
 
 showcase_gibbs_sampling_steps = 1000
 showcase_num_samples_w = 15
