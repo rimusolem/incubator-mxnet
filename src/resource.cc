@@ -410,7 +410,7 @@ unsigned ResourceManagerImpl::GetRandomSequenceID<cpu>(
   unsigned sampler_id,
   bool is_parallel_generator
 ) const {
-  using PRNG = mxnet::common::random::RandGenerator<cpu, mshadow::default_real_t>;
+  using PRNG = mxnet::common::random::RandGenerator<cpu>;
   if (is_parallel_generator) {
     // Number of independent random sequences used for samplers ahead of this one.
     return kReservedNumCPUNonParallelRNGs +
@@ -422,13 +422,14 @@ unsigned ResourceManagerImpl::GetRandomSequenceID<cpu>(
   }
 }
 
+#if MXNET_USE_CUDA
 template<>
 unsigned ResourceManagerImpl::GetRandomSequenceID<gpu>(
   unsigned dev_id,
   unsigned sampler_id,
   bool is_parallel_generator
 ) const {
-  using PRNG = mxnet::common::random::RandGenerator<gpu, mshadow::default_real_t>;
+  using PRNG = mxnet::common::random::RandGenerator<gpu>;
   const unsigned reservedForCPU = kReservedNumCPUNonParallelRNGs +
     kMaxNumCPUs * cpu_native_rand_copy_ * PRNG::kNumRandomStates;
   if (is_parallel_generator) {
@@ -441,6 +442,7 @@ unsigned ResourceManagerImpl::GetRandomSequenceID<gpu>(
     return dev_id;
   }
 }
+#endif
 
 }  // namespace resource
 
